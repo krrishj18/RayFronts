@@ -523,7 +523,8 @@ class Mapping3DVisualizer(abc.ABC):
     rgb_depth_img = torch.zeros(size=(H, W, 3), device=depth_img.device,
                                 dtype=torch.float)
     mask = depth_img.isfinite()
-    rgb_depth_img[mask, :] = utils.norm_01(depth_img[mask]).unsqueeze(-1)
+    if mask.any():
+      rgb_depth_img[mask, :] = utils.norm_01(depth_img[mask]).unsqueeze(-1)
     mask = depth_img.isposinf()
     rgb_depth_img[mask, :] = torch.tensor([1., 0, 0])
     mask = depth_img.isneginf()
