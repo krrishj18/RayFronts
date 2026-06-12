@@ -252,11 +252,13 @@ class Ros2Subscriber(PosedRgbdDataset):
 
       msgs = dict(zip(self._subs.keys(), msgs))
 
-      # Parse RGB
-      bgra_img = image_to_numpy(msgs["rgb"]).astype("float") / 255
-      bgr_img = bgra_img[..., :3]
-      rgb_img = torch.tensor(bgr_img[..., (2,1,0)],
-                             dtype=torch.float).permute(2, 0, 1)
+      # Parse RGB. Only swap channels when the message is actually
+      # BGR-encoded; rgb8/rgba8 streams must pass through unswapped.
+      img = image_to_numpy(msgs["rgb"]).astype("float") / 255
+      img = img[..., :3]
+      if msgs["rgb"].encoding.lower().startswith("bgr"):
+        img = img[..., (2, 1, 0)]
+      rgb_img = torch.tensor(img, dtype=torch.float).permute(2, 0, 1)
 
       # Parse Pose
       src_pose_4x4 = torch.tensor(
