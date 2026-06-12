@@ -183,11 +183,12 @@ class Ros2Subscriber(PosedRgbdDataset):
 
     # 0.01 slop rarely matches when pose (odom bridge) and images (sim) run
     # at different rates; 0.1 matches the StarlingMaxSubscriber below.
-    # queue_size must span the sim's image publication lag (images arrive in
-    # delayed bursts ~10s behind the live pose stream under render load) or
-    # the matching pose is evicted before its image ever arrives.
+    # queue_size must span the sim's image publication stalls (the camera
+    # pipeline freezes 10-25s under render load, then dumps a burst) or the
+    # matching pose is evicted before its image ever arrives. 450 ≈ 35s of
+    # pose history at ~13Hz; buffered images cost a few hundred MB of RAM.
     self._time_sync = message_filters.ApproximateTimeSynchronizer(
-      list(self._subs.values()), queue_size = 150, slop = 0.1,
+      list(self._subs.values()), queue_size = 450, slop = 0.1,
       allow_headerless = False)
     self._time_sync.registerCallback(self._buffer_frame_msgs)
 
