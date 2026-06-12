@@ -166,12 +166,19 @@ class Ros2Subscriber(PosedRgbdDataset):
         CameraInfo, intrinsics_topic, self._set_intrinsics_from_msg,
         QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, depth=1))
 
+    # BEST_EFFORT matches both best-effort (sim sensors) and reliable
+    # publishers; RELIABLE would silently receive nothing from the former.
+    # depth must buffer messages while the mapping loop hogs the executor
+    # (seconds per batch) or the time synchronizer never finds matching
+    # rgb+depth+pose tuples and mapping starves after the first batch.
+    _sync_qos = QoSProfile(
+      reliability=ReliabilityPolicy.BEST_EFFORT, depth=10)
     self._subs = OrderedDict()
     for i, t in enumerate(self._topics):
       msg_str = list(msg_str_to_type.keys())[i]
       if t is not None:
         self._subs[msg_str] = message_filters.Subscriber(
-          self._rosnode, msg_str_to_type[msg_str], t, qos_profile = 10)
+          self._rosnode, msg_str_to_type[msg_str], t, qos_profile=_sync_qos)
     self._frame_msgs_queue = queue.Queue(maxsize=10)
 
     self._time_sync = message_filters.ApproximateTimeSynchronizer(
