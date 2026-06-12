@@ -523,7 +523,10 @@ class Mapping3DVisualizer(abc.ABC):
     rgb_depth_img = torch.zeros(size=(H, W, 3), device=depth_img.device,
                                 dtype=torch.float)
     mask = depth_img.isfinite()
-    rgb_depth_img[mask, :] = utils.norm_01(depth_img[mask]).unsqueeze(-1)
+    # Frames can be entirely non-finite (e.g. depth_limit clamps everything
+    # beyond range to inf at altitude); norm_01 on an empty tensor throws.
+    if mask.any():
+      rgb_depth_img[mask, :] = utils.norm_01(depth_img[mask]).unsqueeze(-1)
     mask = depth_img.isposinf()
     rgb_depth_img[mask, :] = torch.tensor([1., 0, 0])
     mask = depth_img.isneginf()
