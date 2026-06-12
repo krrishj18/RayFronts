@@ -181,8 +181,10 @@ class Ros2Subscriber(PosedRgbdDataset):
           self._rosnode, msg_str_to_type[msg_str], t, qos_profile=_sync_qos)
     self._frame_msgs_queue = queue.Queue(maxsize=10)
 
+    # 0.01 slop rarely matches when pose (odom bridge) and images (sim) run
+    # at different rates; 0.1 matches the StarlingMaxSubscriber below.
     self._time_sync = message_filters.ApproximateTimeSynchronizer(
-      list(self._subs.values()), queue_size = 10, slop = 0.01,
+      list(self._subs.values()), queue_size = 10, slop = 0.1,
       allow_headerless = False)
     self._time_sync.registerCallback(self._buffer_frame_msgs)
 
