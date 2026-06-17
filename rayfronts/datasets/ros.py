@@ -764,8 +764,9 @@ class StarlingMaxSubscriber(PosedRgbdDataset):
         undist = undist[y:y+rh, x:x+rw]
         rgb_np = undist
 
-      # Flip BGR → RGB (VOXL typically publishes bgra8 or bgr8)
-      if rgb_np.shape[-1] == 3:
+      # Flip to RGB only when the source is actually BGR (VOXL bgr8/bgra8).
+      # Isaac Sim publishes rgb8 — flipping it would feed RADIO swapped R/B.
+      if rgb_np.shape[-1] == 3 and msgs["rgb"].encoding.startswith("bgr"):
         rgb_np = rgb_np[..., ::-1].copy()
       rgb_img = torch.tensor(
         rgb_np.astype(np.float32) / 255.0,
