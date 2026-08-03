@@ -37,6 +37,13 @@ try:
   from rclpy.node import Node
   from rclpy.executors import SingleThreadedExecutor
   from rclpy.qos import QoSProfile, ReliabilityPolicy
+  try:
+    # Raised when an entity is destroyed while the executor is building its
+    # wait set. Only exposed on the private binding module.
+    from rclpy._rclpy_pybind11 import InvalidHandle
+  except ImportError:  # pragma: no cover - depends on the rclpy build
+    class InvalidHandle(Exception):
+      pass
   import message_filters
   from sensor_msgs.msg import Image, CameraInfo, PointCloud, PointCloud2
   from geometry_msgs.msg import PoseStamped
@@ -49,6 +56,11 @@ try:
   )
 except ModuleNotFoundError:
   logger.warning("ROS2 modules not found !")
+  # Keep the name bound so `except InvalidHandle` in the spinner is still valid
+  # if this module is imported without ROS (it never runs, but resolving the
+  # handler must not raise NameError).
+  class InvalidHandle(Exception):
+    pass
 
 try:
   import cv2
@@ -209,7 +221,14 @@ class Ros2Subscriber(PosedRgbdDataset):
           self.shutdown()
           raise e
         if r:
-          self._rosnode.destroy_subscription(self.intrinsics_sub)
+          # NOTE: do *not* destroy_subscription here. This runs on the main
+          # thread while the spinner is inside executor.spin(); if it is
+          # between collecting entities and add_to_wait_set, it picks up the
+          # half-destroyed handle and dies with InvalidHandle. The spinner is
+          # the only thing pumping camera callbacks, so the process then sits
+          # in "Starting mapping" forever, delivering no frames. The callback
+          # below no-ops once intrinsics are loaded, which costs one idle
+          # CameraInfo subscription and cannot race.
           break
     else:
       self._spin_thread.start()
@@ -217,14 +236,40 @@ class Ros2Subscriber(PosedRgbdDataset):
     logger.info("Ros2Subscriber initialized successfully.")
 
   def _spin_ros(self):
-    try:
-      self._ros_executor.spin()
-    except (KeyboardInterrupt,
-            rclpy.executors.ExternalShutdownException,
-            rclpy.executors.ShutdownException):
-      pass
+    """Pump ROS callbacks until shutdown.
+
+    This thread is the *only* thing delivering frames, so it must not die
+    quietly: if it does, the consumer in __iter__ blocks on an empty queue
+    forever and the process hangs with no error and no data. InvalidHandle is
+    survivable — an entity was destroyed while the wait set was being built, so
+    rebuild it and carry on. Anything else is fatal, so log it and trip the
+    shutdown event to unblock the consumer instead of hanging.
+    """
+    while not self._shutdown_event.is_set():
+      try:
+        self._ros_executor.spin()
+        return
+      except (KeyboardInterrupt,
+              rclpy.executors.ExternalShutdownException,
+              rclpy.executors.ShutdownException):
+        return
+      except InvalidHandle:
+        # An entity went away under the executor; the wait set is rebuilt on
+        # the next spin() call.
+        logger.warning(
+          "ROS executor hit InvalidHandle (entity destroyed while building "
+          "the wait set); resuming spin.")
+        continue
+      except Exception:
+        logger.exception(
+          "ROS input stream spinner died — no further frames can arrive, "
+          "shutting the datastream down rather than blocking forever.")
+        self._shutdown_event.set()
+        return
 
   def _set_intrinsics_from_msg(self, msg):
+    if self.intrinsics_3x3 is not None:
+      return  # already loaded; the subscription is left alive on purpose
     self._intrinsics_loaded_cond.acquire()
     self.intrinsics_3x3 = torch.tensor(msg.k, dtype = torch.float).reshape(3,3)
     self.original_h = msg.height
@@ -713,12 +758,36 @@ class StarlingMaxSubscriber(PosedRgbdDataset):
   # ---------- ROS helpers ----------
 
   def _spin_ros(self):
-    try:
-      self._ros_executor.spin()
-    except (KeyboardInterrupt,
-            rclpy.executors.ExternalShutdownException,
-            rclpy.executors.ShutdownException):
-      pass
+    """Pump ROS callbacks until shutdown.
+
+    This thread is the *only* thing delivering frames, so it must not die
+    quietly: if it does, the consumer in __iter__ blocks on an empty queue
+    forever and the process hangs with no error and no data. InvalidHandle is
+    survivable — an entity was destroyed while the wait set was being built, so
+    rebuild it and carry on. Anything else is fatal, so log it and trip the
+    shutdown event to unblock the consumer instead of hanging.
+    """
+    while not self._shutdown_event.is_set():
+      try:
+        self._ros_executor.spin()
+        return
+      except (KeyboardInterrupt,
+              rclpy.executors.ExternalShutdownException,
+              rclpy.executors.ShutdownException):
+        return
+      except InvalidHandle:
+        # An entity went away under the executor; the wait set is rebuilt on
+        # the next spin() call.
+        logger.warning(
+          "ROS executor hit InvalidHandle (entity destroyed while building "
+          "the wait set); resuming spin.")
+        continue
+      except Exception:
+        logger.exception(
+          "ROS input stream spinner died — no further frames can arrive, "
+          "shutting the datastream down rather than blocking forever.")
+        self._shutdown_event.set()
+        return
 
   def _buffer_frame_msgs(self, *msgs):
     if self.frame_skip <= 0 or self.f % (self.frame_skip + 1) == 0:
