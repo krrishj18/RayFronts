@@ -57,6 +57,7 @@ except ModuleNotFoundError:
 
 from rayfronts.datasets.base import PosedRgbdDataset
 from rayfronts import geometry3d as g3d
+from rayfronts import ros_context
 
 class Ros2Subscriber(PosedRgbdDataset):
   """ROS2 subscriber node to subscribe to posed RGBD topics.
@@ -83,7 +84,10 @@ class Ros2Subscriber(PosedRgbdDataset):
                intrinsics_file = None,
                src_coord_system = "flu",
                frame_skip = 0,
-               interp_mode="bilinear"):
+               interp_mode="bilinear",
+               context = None,
+               domain_id = None,
+               node_name = None):
     """
 
     There can be three sources of depth:
@@ -115,6 +119,17 @@ class Ros2Subscriber(PosedRgbdDataset):
         system in r/l u/d f/b in any order. (e.g, rdf, flu, rfu)
       frame_skip: See base.
       interp_mode: See base.
+      context: (Optional) An already initialized rclpy.Context to attach this
+        node to. The context is NOT owned: shutdown() destroys the node but
+        leaves the context running. Leave as None for the legacy behaviour
+        (process-global default context).
+      domain_id: (Optional) When given (and `context` is None) a private
+        refcounted context pinned to this ROS_DOMAIN_ID is acquired from
+        rayfronts.ros_context and released on shutdown(). Leave as None for
+        the legacy behaviour.
+      node_name: (Optional) Override the ROS node name. Needed when several
+        subscribers live in one process. Defaults to the legacy
+        "rayfronts_input_streamer".
     """
     super().__init__(rgb_resolution=rgb_resolution,
                      depth_resolution=depth_resolution,
@@ -157,9 +172,16 @@ class Ros2Subscriber(PosedRgbdDataset):
     )
     self._topics = [rgb_topic, pose_topic, disparity_topic, depth_topic,
     point_cloud_topic, confidence_topic]
-    if not rclpy.ok():
-      rclpy.init()
-    self._rosnode = Node("rayfronts_input_streamer")
+    self._context, self._owns_context = ros_context.resolve_ros_object(
+      context=context, domain_id=domain_id)
+    if self._context is None:
+      # Legacy path: process-global default context, unchanged.
+      if not rclpy.ok():
+        rclpy.init()
+      self._rosnode = Node(node_name or "rayfronts_input_streamer")
+    else:
+      self._rosnode = Node(node_name or "rayfronts_input_streamer",
+                           context=self._context)
 
     if intrinsics_topic is not None:
       self.intrinsics_sub = self._rosnode.create_subscription(
@@ -179,10 +201,15 @@ class Ros2Subscriber(PosedRgbdDataset):
       allow_headerless = False)
     self._time_sync.registerCallback(self._buffer_frame_msgs)
 
-    self._ros_executor = SingleThreadedExecutor()
+    if self._context is None:
+      self._ros_executor = SingleThreadedExecutor()
+    else:
+      self._ros_executor = SingleThreadedExecutor(context=self._context)
     self._ros_executor.add_node(self._rosnode)
     self._spin_thread = threading.Thread(
-      target=self._spin_ros, name="rayfronts_input_stream_spinner")
+      target=self._spin_ros,
+      name=("rayfronts_input_stream_spinner" if node_name is None
+            else f"{node_name}_spinner"))
     self._spin_thread.daemon = True
 
     if intrinsics_topic is not None:
@@ -252,11 +279,15 @@ class Ros2Subscriber(PosedRgbdDataset):
 
       msgs = dict(zip(self._subs.keys(), msgs))
 
-      # Parse RGB
-      bgra_img = image_to_numpy(msgs["rgb"]).astype("float") / 255
-      bgr_img = bgra_img[..., :3]
-      rgb_img = torch.tensor(bgr_img[..., (2,1,0)],
-                             dtype=torch.float).permute(2, 0, 1)
+      # Parse RGB. Only swap channels when the message is actually
+      # BGR-encoded (VOXL bgr8/bgra8); rgb8/rgba8 must pass through
+      # unswapped. Isaac Sim publishes rgb8 — flipping it feeds RADIO
+      # swapped R/B. Same fix as datasets/multi_ros.py:_decode; keep in sync.
+      img = image_to_numpy(msgs["rgb"]).astype("float") / 255
+      img = img[..., :3]
+      if msgs["rgb"].encoding.lower().startswith("bgr"):
+        img = img[..., (2, 1, 0)]
+      rgb_img = torch.tensor(img, dtype=torch.float).permute(2, 0, 1)
 
       # Parse Pose
       src_pose_4x4 = torch.tensor(
@@ -348,7 +379,23 @@ class Ros2Subscriber(PosedRgbdDataset):
 
   def shutdown(self):
     self._shutdown_event.set()
-    self._rosnode.context.try_shutdown()
+    if self._context is None:
+      # Legacy path, unchanged: tear the (shared, default) context down.
+      self._rosnode.context.try_shutdown()
+    else:
+      # Multi-context path: destroy only OUR node, then drop our reference to
+      # the private context. Never touch the default context or a context that
+      # some other robot is still using.
+      try:
+        self._ros_executor.remove_node(self._rosnode)
+      except Exception:
+        pass
+      try:
+        self._rosnode.destroy_node()
+      except Exception:
+        logger.exception("Failed to destroy input node.")
+      if self._owns_context:
+        ros_context.release_context(self._context)
     logger.info("Ros2Subscriber shutdown.")
 
 

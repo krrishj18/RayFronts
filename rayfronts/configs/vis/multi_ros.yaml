@@ -1,0 +1,14 @@
+defaults:
+  - base_vis
+
+# Per-robot mirrors of the shared map's visualisation layers.
+_target_: rayfronts.visualizers.MultiRobotRos2Vis
+
+robot_ids: ${dataset.robot_ids}
+domain_ids: ${dataset.domain_ids}
+
+# Same prefix the per-robot deployment uses (/robot_$ROS_DOMAIN_ID/rayfronts).
+topic_prefix_template: "/{robot}/rayfronts"
+
+# RVIZ2 only supports reliable; best_effort is faster.
+reliability: "reliable"

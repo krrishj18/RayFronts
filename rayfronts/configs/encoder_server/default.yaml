@@ -1,0 +1,19 @@
+# Settings for `python3 -m rayfronts.encoder_server`.
+
+# Unix socket to listen on. Must match encoder.socket on every ClientEncoder.
+socket: /tmp/rayfronts/encoder.sock
+
+# Device to load the encoder onto. null = the encoder's own default
+# ("cuda" when available, else "cpu").
+device: null
+
+# [h, w] to run one throw-away forward pass through at startup, so the first
+# real frame does not pay the cudnn/compile warm-up. null disables it.
+# Set this to dataset.rgb_resolution of the mapping server that will connect.
+warmup: null
+
+# Maximum number of simultaneously connected mapping servers.
+max_clients: 8
+
+# Optional shared secret; must match encoder.authkey. null = none.
+authkey: null

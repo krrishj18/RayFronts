@@ -1,0 +1,30 @@
+defaults:
+  - base_encoder
+
+# A proxy to an encoder running in a separate process (rayfronts.encoder_server).
+# The real model (radseg, naradio, ...) is chosen on the SERVER's command line;
+# nothing here loads a model or touches the GPU.
+_target_: rayfronts.image_encoders.ClientEncoder
+
+# Unix socket the encoder server listens on. Must match
+# `encoder_server.socket` on the server side.
+socket: /tmp/rayfronts/encoder.sock
+
+# auto      -> CUDA IPC when both processes see a GPU, plain CPU tensors if not.
+# cuda_ipc  -> require CUDA IPC (error out instead of silently going through
+#              host memory, which would cost ~40 MB/frame of copies).
+# cpu       -> always move tensors through host memory. Slow but always works;
+#              useful when debugging on a CPU-only box.
+transport: auto
+
+# Per-call timeout. A cold radseg forward on a busy GPU can take a few seconds;
+# 300 s is a "the server is wedged" timeout, not a latency budget.
+timeout_s: 300.0
+
+# How long to wait at startup for the server's socket to appear. The mapping
+# server and the encoder server are usually launched together.
+connect_timeout_s: 300.0
+
+# Optional shared secret; must match encoder_server.authkey. null = none
+# (the socket is already restricted by filesystem permissions).
+authkey: null

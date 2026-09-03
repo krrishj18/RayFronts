@@ -30,7 +30,7 @@ except ModuleNotFoundError:
   logger.warning("ROS2 modules not found !")
 
 from rayfronts.visualizers.base import Mapping3DVisualizer
-from rayfronts import geometry3d as g3d, feat_compressors
+from rayfronts import geometry3d as g3d, feat_compressors, ros_context
 
 
 class Ros2Vis(Mapping3DVisualizer):
@@ -56,6 +56,9 @@ class Ros2Vis(Mapping3DVisualizer):
                feat_compressor: feat_compressors.FeatCompressor = None,
                topic_prefix: str = "rayfronts",
                reliability: str = "best_effort",
+               context = None,
+               domain_id = None,
+               node_name: str = None,
                **kwargs):
     """
 
@@ -68,13 +71,27 @@ class Ros2Vis(Mapping3DVisualizer):
       topic_prefix: Prefix for the ROS2 topics.
       reliability: Reliability of the ROS2 topics. Can be "reliable" or
         "best_effort".
+      context: (Optional) An already initialized rclpy.Context to attach this
+        node to. NOT owned: shutdown() destroys the node and leaves the context
+        alone. None keeps the legacy default-context behaviour.
+      domain_id: (Optional) When given (and context is None) a private
+        refcounted context pinned to this ROS_DOMAIN_ID is acquired from
+        rayfronts.ros_context and released on shutdown().
+      node_name: (Optional) Override the ROS node name (needed when several
+        visualizers share a process). Defaults to "rayfronts_vis".
     """
     super().__init__(intrinsics_3x3, img_size, base_point_size,
                      global_heat_scale, feat_compressor)
 
-    if not rclpy.ok():
-      rclpy.init()
-    self._rosnode = Node("rayfronts_vis")
+    self._context, self._owns_context = ros_context.resolve_ros_object(
+      context=context, domain_id=domain_id)
+    if self._context is None:
+      if not rclpy.ok():
+        rclpy.init()
+      self._rosnode = Node(node_name or "rayfronts_vis")
+    else:
+      self._rosnode = Node(node_name or "rayfronts_vis",
+                           context=self._context)
     self.topic_prefix = topic_prefix
     self._height = None
     self._width = None
@@ -99,10 +116,15 @@ class Ros2Vis(Mapping3DVisualizer):
       history=HistoryPolicy.KEEP_LAST)
 
     self._shutdown_event = threading.Event()
-    self._ros_executor = SingleThreadedExecutor()
+    if self._context is None:
+      self._ros_executor = SingleThreadedExecutor()
+    else:
+      self._ros_executor = SingleThreadedExecutor(context=self._context)
     self._ros_executor.add_node(self._rosnode)
     self._spin_thread = threading.Thread(
-      target=self._spin_ros, name="rayfronts_vis_spinner")
+      target=self._spin_ros,
+      name=("rayfronts_vis_spinner" if node_name is None
+            else f"{node_name}_spinner"))
     self._spin_thread.daemon = True
     self._spin_thread.start()
 
@@ -253,6 +275,19 @@ class Ros2Vis(Mapping3DVisualizer):
     super().step()
 
   def shutdown(self):
-    self._rosnode.context.try_shutdown()
+    if self._context is None:
+      # Legacy path, unchanged.
+      self._rosnode.context.try_shutdown()
+    else:
+      try:
+        self._ros_executor.remove_node(self._rosnode)
+      except Exception:
+        pass
+      try:
+        self._rosnode.destroy_node()
+      except Exception:
+        logger.exception("Failed to destroy vis node.")
+      if self._owns_context:
+        ros_context.release_context(self._context)
     self._shutdown_event.set()
     

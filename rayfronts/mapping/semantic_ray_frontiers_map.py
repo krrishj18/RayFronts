@@ -508,7 +508,12 @@ class SemanticRayFrontiersMap(SemanticRGBDMapping):
       # TODO: Test if its faster to project boundary points and pose centers
       # instead of doing min max over all tmp voxels. Or maybe let occ_pc2vdb
       # return the bounding box since it will iterate over all voxels already.
-      if updated_vox_xyz.shape[0] > 0:
+      # accum_occ_voxels() returns None when the window accumulated nothing —
+      # e.g. a frame whose depth is all inf (camera on the horizon/sky, which
+      # a pitch-0 mount at low altitude produces routinely). The sem-pruning
+      # guard above already checks None; this call site missed it and took
+      # the whole mapping server down mid-flight (hit live 2026-09-02).
+      if updated_vox_xyz is not None and updated_vox_xyz.shape[0] > 0:
         active_bbox_min = torch.min(updated_vox_xyz, dim = 0).values
         active_bbox_max = torch.max(updated_vox_xyz, dim = 0).values
         self.update_frontiers(active_bbox_min, active_bbox_max)

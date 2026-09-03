@@ -9,6 +9,11 @@ from rayfronts.datasets.tartanair import TartanAirDataset
 
 failed_to_import = list()
 try:
+  from rayfronts.datasets.multi_ros import MultiRobotRos2Subscriber
+except Exception:
+  failed_to_import.append("MultiRobotRos2Subscriber")
+
+try:
   from rayfronts.datasets.dummy import DummyDataset
 except:
   failed_to_import.append("DummyDataset")

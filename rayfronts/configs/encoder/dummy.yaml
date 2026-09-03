@@ -1,0 +1,14 @@
+defaults:
+  - base_encoder
+
+# Deterministic fixed-weight encoder. No checkpoint, no network, no GPU needed.
+# Used by tests/test_client_encoder.py to prove the transport, and handy for a
+# dry run of the whole server on a laptop.
+_target_: rayfronts.image_encoders.DummyEncoder
+
+feat_dim: 16
+lang_dim: 8
+patch_size: 16
+seed: 17
+compile: ${compile}
+amp: ${amp}

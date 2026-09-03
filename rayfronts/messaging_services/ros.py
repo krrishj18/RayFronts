@@ -17,7 +17,11 @@ import numpy as np
 import torch
 import std_msgs.msg
 from rayfronts.messaging_services import MessagingService
-from rayfronts import ros_utils
+from rayfronts import ros_utils, ros_context
+from rayfronts.multi_robot_common import (
+  sanitize_topic_name as _shared_sanitize_topic_name,
+  query_topic_suffix as _shared_query_topic_suffix,
+)
 
 import rclpy
 from rclpy.node import Node
@@ -56,7 +60,10 @@ class Ros2MessagingService(MessagingService):
                text_query_callback=None,
                query_publish_threshold: float = 0.0,
                topic_prefix: str = "/rayfronts/msg_serv",
-               frame_id: str = "map"):
+               frame_id: str = "map",
+               context = None,
+               domain_id = None,
+               node_name: str = None):
     """
 
     Args:
@@ -68,6 +75,15 @@ class Ros2MessagingService(MessagingService):
       topic_prefix: Prefix for all published topics. Full topic is
         prefix + "/" + key.
       frame_id: Frame id set on published PointCloud2 headers.
+      context: (Optional) An already initialized rclpy.Context to attach this
+        node to. NOT owned: shutdown() destroys the node and leaves the context
+        alone. None keeps the legacy default-context behaviour.
+      domain_id: (Optional) When given (and context is None) a private
+        refcounted context pinned to this ROS_DOMAIN_ID is acquired from
+        rayfronts.ros_context and released on shutdown().
+      node_name: (Optional) Override the ROS node name (needed when several
+        services share a process). Defaults to
+        "rayfronts_messaging_service".
     """
     super().__init__()
     self.text_query_topic = text_query_topic
@@ -77,18 +93,29 @@ class Ros2MessagingService(MessagingService):
     self.frame_id = frame_id
     self._publishers = dict()
 
-    if not rclpy.ok():
-      rclpy.init()
-    self._rosnode = Node("rayfronts_messaging_service")
+    self._context, self._owns_context = ros_context.resolve_ros_object(
+      context=context, domain_id=domain_id)
+    if self._context is None:
+      if not rclpy.ok():
+        rclpy.init()
+      self._rosnode = Node(node_name or "rayfronts_messaging_service")
+    else:
+      self._rosnode = Node(node_name or "rayfronts_messaging_service",
+                           context=self._context)
 
     self.text_query_sub = self._rosnode.create_subscription(
       std_msgs.msg.String, text_query_topic, self.text_query_handler,
       QoSProfile(reliability=ReliabilityPolicy.RELIABLE, depth=5))
 
-    self._ros_executor = SingleThreadedExecutor()
+    if self._context is None:
+      self._ros_executor = SingleThreadedExecutor()
+    else:
+      self._ros_executor = SingleThreadedExecutor(context=self._context)
     self._ros_executor.add_node(self._rosnode)
     self._spin_thread = threading.Thread(
-      target=self._spin_ros, name="rayfronts_messaging_service_spinner")
+      target=self._spin_ros,
+      name=("rayfronts_messaging_service_spinner" if node_name is None
+            else f"{node_name}_spinner"))
     self._spin_thread.daemon = True
     self._spin_thread.start()
 
@@ -154,28 +181,18 @@ class Ros2MessagingService(MessagingService):
 
   def _sanitize_topic_name(self, s: str) -> str:
     """Make a string safe for ROS 2 topic names (alphanumeric and underscore).
-    Replaces spaces and other invalid chars with underscore, collapses runs."""
-    if not isinstance(s, str) or not s:
-      return ""
-    out = []
-    for c in s:
-      if c.isalnum() or c == "_":
-        out.append(c)
-      elif c.isspace() or not c.isalnum():
-        out.append("_")
-    name = "".join(out)
-    while "__" in name:
-      name = name.replace("__", "_")
-    return name.strip("_") or ""
+    Replaces spaces and other invalid chars with underscore, collapses runs.
+
+    Delegates to rayfronts.multi_robot_common.sanitize_topic_name (a verbatim
+    move of the body that used to live here) so the per-robot server and the
+    shared multi-robot server can never disagree about a topic name --
+    raven_nav parses labels back out of these names."""
+    return _shared_sanitize_topic_name(s)
 
   def _query_topic_suffix(self, q: int, query_labels: list = None) -> str:
     """Return topic suffix for query index q: 'q{q}_{label}' or 'q{q}'.
     Prefix with 'q' so the segment never starts with a digit (ROS 2 topic rules)."""
-    if query_labels is not None and q < len(query_labels):
-      sanitized = self._sanitize_topic_name(str(query_labels[q]))
-      if sanitized:
-        return f"q{q}_{sanitized}"
-    return f"q{q}"
+    return _shared_query_topic_suffix(q, query_labels)
 
   @override
   def publish_query_results(self, query_results: dict,
@@ -313,5 +330,18 @@ class Ros2MessagingService(MessagingService):
 
   @override
   def shutdown(self):
-    """Shut down the ROS node context."""
-    self._rosnode.context.try_shutdown()
+    """Shut down the ROS node context (legacy) or just our own node."""
+    if self._context is None:
+      # Legacy path, unchanged.
+      self._rosnode.context.try_shutdown()
+      return
+    try:
+      self._ros_executor.remove_node(self._rosnode)
+    except Exception:
+      pass
+    try:
+      self._rosnode.destroy_node()
+    except Exception:
+      logger.exception("Failed to destroy messaging node.")
+    if self._owns_context:
+      ros_context.release_context(self._context)

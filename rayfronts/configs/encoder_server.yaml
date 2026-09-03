@@ -1,0 +1,22 @@
+# Root config for `python3 -m rayfronts.encoder_server`.
+#
+#   python3 -m rayfronts.encoder_server encoder=radseg \
+#           encoder_server.socket=/tmp/rayfronts/encoder.sock
+#
+# Only the encoder and the socket matter here; there is no dataset, no mapper
+# and no ROS in this process.
+defaults:
+  - _self_
+  - encoder: radseg
+  - encoder_server: default
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+
+# Referenced by the encoder configs (encoder/radseg.yaml uses ${compile}/${amp}).
+compile: False
+amp: True
+
+seed: 17

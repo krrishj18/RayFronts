@@ -1,0 +1,24 @@
+# Fans one shared map out to every robot's own domain, in that robot's frame,
+# and merges every robot's queries back into one query set.
+_target_: rayfronts.messaging_services.MultiRobotRos2MessagingService
+
+# Follow the dataset so `dataset.robot_ids=[1,2]` on the command line is enough.
+robot_ids: ${dataset.robot_ids}
+domain_ids: ${dataset.domain_ids}
+
+# Exactly the topic names the per-robot server publishes today, so raven_nav
+# needs no change: {prefix}/voxels_sim/all, {prefix}/voxels_sim/q{k}_{label},
+# {prefix}/rays_sim/..., {prefix}/frontiers.
+topic_prefix_template: "/{robot}/rayfronts/msg_serv"
+text_query_topic_template: "/{robot}/rayfronts/msg_serv/new_text_query"
+
+# NEW: the robot's FULL current LVLM guiding list, as a JSON array of strings.
+# A guiding label lives while any robot lists it.
+guiding_queries_topic_template: "/{robot}/rayfronts/msg_serv/guiding_queries"
+
+# NEW: per-robot server state (anchored, frames, queries, counts) as JSON.
+# semantic_search_task's shared mode gates the mission on this.
+status_topic_template: "/{robot}/rayfronts/status"
+
+query_publish_threshold: 0.0
+frame_id: "map"

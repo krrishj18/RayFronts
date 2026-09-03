@@ -15,6 +15,8 @@ from rayfronts.image_encoders.naradio import NARadioEncoder
 from rayfronts.image_encoders.gt import GTEncoder
 from rayfronts.image_encoders.semseg_wrap import SemSegWrapEncoder
 from rayfronts.image_encoders.radseg import RADSegEncoder
+from rayfronts.image_encoders.dummy import DummyEncoder
+from rayfronts.image_encoders.client_encoder import ClientEncoder
 
 failed_to_import = list()
 try:

@@ -164,9 +164,13 @@ class MappingServer:
       queries = [queries]
 
     with self._query_lock:
-      queries = set(queries).difference(self._queries_labels_history)
-
-      queries = list(queries)
+      # ORDER-PRESERVING dedupe. The old `set(queries).difference(...)`
+      # scrambled multi-label calls (Python set order), and column order IS
+      # the sim_k -> label contract every consumer downstream thresholds and
+      # colours by (live 2026-09-02: roads rendered as `person` after a
+      # restart re-registered the same labels in a different order).
+      queries = [q for q in dict.fromkeys(queries)
+                 if q not in self._queries_labels_history]
       if len(queries) == 0:
         return
 
@@ -198,17 +202,13 @@ class MappingServer:
 
     queries_labels = dict(text=text_queries, img=img_queries)
     queries_feats = dict(text=text_queries_feats, img=img_queries_feats)
-    if (self.feat_compressor is not None and
-        self.cfg.querying.compressed):
-      if not self.feat_compressor.is_fitted():
-        logger.warning("The feature compressor was not fitted. "
-                       "Will try to fit to query features which may fail.")
-        l = [x for x in queries_feats.values() if x is not None]
-        self.feat_compressor.fit(torch.cat(l, dim=0))
-      for k,v in queries_feats.items():
-        if v is None:
-          continue
-        queries_feats[k] = self.feat_compressor.compress(v)
+    # Queries are stored RAW and compressed lazily in run_queries(). The old
+    # behaviour compressed here and, when the compressor was not fitted yet,
+    # FIT IT ON THE QUERY VECTORS — with PCA(out_dim=100) and 33 text queries
+    # that is pca_lowrank(q=100 > 33), a crash (hit live 2026-09-02), and a
+    # basis fit on text vectors is the wrong basis for map features anyway.
+    # The compressor's one legitimate fit site is the first FRAME's dense
+    # feature image (mapping/base.py:310).
 
     with self._query_lock:
       if self._queries_feats is None:
@@ -244,9 +244,19 @@ class MappingServer:
         for k,v in self._queries_labels.items():
           if v is None or len(v) < 1:
             continue
+          # Stored feats are RAW (see add_queries). Compress here once the
+          # first frame has fitted the compressor; before that there is no
+          # map to query, and compressed=False keeps the call well-formed.
+          feats_k = self._queries_feats[k]
+          compressed_k = bool(self.cfg.querying.compressed)
+          if self.feat_compressor is not None and compressed_k:
+            if self.feat_compressor.is_fitted():
+              feats_k = self.feat_compressor.compress(feats_k)
+            else:
+              compressed_k = False
           r = self.mapper.feature_query(
-            self._queries_feats[k], softmax=self.cfg.querying.compute_prob,
-            compressed=self.cfg.querying.compressed)
+            feats_k, softmax=self.cfg.querying.compute_prob,
+            compressed=compressed_k)
           if self.vis is not None and r is not None:
             self.mapper.vis_query_result(r, vis_labels=v, **kwargs)
           if r is not None and self.messaging_service is not None:
