@@ -60,6 +60,13 @@ def test_query_topic_suffix(mrc):
   assert mrc.query_topic_suffix(9, labels) == "q9"
 
 
+def test_visualization_topic_path_sanitizes_runtime_query_labels(mrc):
+  raw = 'queries/["person", "utility pole"]/voxels'
+  assert (mrc.sanitize_topic_path(raw)
+          == "queries/person_utility_pole/voxels")
+  assert mrc.sanitize_topic_path("queries/!!!/rays") == "queries/unnamed/rays"
+
+
 def test_topic_templates(mrc):
   assert mrc.robot_name(2) == "robot_2"
   assert mrc.robot_name("robot_9") == "robot_9"

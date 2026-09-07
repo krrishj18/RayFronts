@@ -203,6 +203,19 @@ def sanitize_topic_name(s: str) -> str:
   return name.strip("_") or ""
 
 
+def sanitize_topic_path(path: str) -> str:
+  """Sanitize every segment of a relative ROS topic path.
+
+  Visualization layers may retain ``/`` hierarchy, but query labels are
+  runtime strings and can contain JSON punctuation, quotes, or brackets.
+  Passing those characters directly to ``create_publisher`` terminates the
+  shared mapper. Empty/fully-punctuation segments get a stable placeholder.
+  """
+  segments = str(path).split("/")
+  return "/".join(sanitize_topic_name(segment) or "unnamed"
+                  for segment in segments)
+
+
 def query_topic_suffix(q: int, query_labels: Optional[Sequence] = None) -> str:
   """``q{index}_{sanitized label}`` (or ``q{index}`` when there is no label)."""
   if query_labels is not None and q < len(query_labels):

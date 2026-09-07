@@ -31,6 +31,7 @@ except ModuleNotFoundError:
 
 from rayfronts.visualizers.base import Mapping3DVisualizer
 from rayfronts import geometry3d as g3d, feat_compressors, ros_context
+from rayfronts.multi_robot_common import sanitize_topic_path
 
 
 class Ros2Vis(Mapping3DVisualizer):
@@ -139,6 +140,7 @@ class Ros2Vis(Mapping3DVisualizer):
       pass
 
   def _get_publisher(self, key: str, msg_type):
+    key = sanitize_topic_path(key)
     try:
       return self._publishers[key]
     except KeyError:
