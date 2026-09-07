@@ -523,7 +523,13 @@ class Mapping3DVisualizer(abc.ABC):
     rgb_depth_img = torch.zeros(size=(H, W, 3), device=depth_img.device,
                                 dtype=torch.float)
     mask = depth_img.isfinite()
-    rgb_depth_img[mask, :] = utils.norm_01(depth_img[mask]).unsqueeze(-1)
+    # A newly connected or time-sliced camera can legitimately deliver an
+    # all-inf/all-NaN depth frame while its render product warms up. Reducing
+    # an empty finite selection raises in torch and used to terminate the
+    # entire shared multi-robot mapping server. The non-finite colour mapping
+    # below is already the intended representation for this frame.
+    if mask.any():
+      rgb_depth_img[mask, :] = utils.norm_01(depth_img[mask]).unsqueeze(-1)
     mask = depth_img.isposinf()
     rgb_depth_img[mask, :] = torch.tensor([1., 0, 0])
     mask = depth_img.isneginf()
