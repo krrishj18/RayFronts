@@ -239,6 +239,29 @@ def test_status_types_are_json_safe(mrc):
   assert all(isinstance(v, float) for v in s["boot_enu"])
 
 
+def test_status_emb_block_is_absent_unless_asked_for(mrc):
+  """A mission without the embedding export sees exactly STATUS_KEYS."""
+  s = mrc.build_status(1, 1, True, [0, 0, 0], 1, 1, [], 0, 0, 0.0, emb=None)
+  assert list(s.keys()) == list(mrc.STATUS_KEYS)
+  assert "emb" not in s
+
+
+def test_status_emb_block_when_the_export_is_enabled(mrc):
+  s = mrc.build_status(1, 1, True, [0, 0, 0], 1, 1, [], 0, 0, 0.0,
+                       emb=dict(k=128, fit_n=4321, cos_preservation=0.94))
+  assert list(s.keys()) == list(mrc.STATUS_KEYS) + ["emb"]
+  assert list(s["emb"].keys()) == list(mrc.STATUS_EMB_KEYS)
+  assert s["emb"] == {"k": 128, "fit_n": 4321, "cos_preservation": 0.94}
+  json.dumps(s)  # must not raise
+
+
+def test_status_emb_block_before_the_basis_is_fitted(mrc):
+  s = mrc.build_status(1, 1, True, [0, 0, 0], 1, 1, [], 0, 0, 0.0,
+                       emb=dict(k=128, fit_n=0, cos_preservation=None))
+  assert s["emb"] == {"k": 128, "fit_n": 0, "cos_preservation": None}
+  assert json.loads(mrc.status_to_json(s))["emb"]["cos_preservation"] is None
+
+
 def test_status_gate_predicate_semantics(mrc):
   """What semantic_search_task's shared mode will evaluate."""
   def ready(status, required):

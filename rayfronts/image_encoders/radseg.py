@@ -171,6 +171,7 @@ class RADSegEncoder(ImageSemSegEncoder):
     self.compile = compile
     self.amp = amp
     self.model_version = model_version
+    self.lang_model = lang_model
     self.return_radio_features = return_radio_features
     adaptor_names = [lang_model, "sam"]
     self.model = torch.hub.load("NVlabs/RADIO", "radio_model",

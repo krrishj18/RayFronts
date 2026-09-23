@@ -299,6 +299,99 @@ def test_status_json_reaches_each_robot_with_the_frozen_schema(service):
 
 
 # --------------------------------------------------------------------------- #
+# Embedding export (rules planner contract)
+# --------------------------------------------------------------------------- #
+
+def _emb_features(n, k):
+  f = {"cnt": torch.arange(1, n + 1, dtype=torch.float)}
+  for j in range(k):
+    f[f"e_{j}"] = torch.full((n,), float(j))
+  return f
+
+
+def test_emb_layers_are_per_robot_and_gated(service):
+  """Same gate as voxels_sim: nothing is created or sent without a listener."""
+  assert service.has_subscribers("emb/voxels") is False
+  for rid in (1, 2):
+    assert f"/robot_{rid}/rayfronts/msg_serv/emb/voxels" in \
+        service.children[rid]._publishers
+  service.publish_pc(torch.zeros(2, 3), features=_emb_features(2, 2),
+                     layer="emb/voxels")
+  for child in service.children.values():
+    assert child._get_publisher(
+      f"{child.topic_prefix}/emb/voxels").get_subscription_count() == 0
+
+
+@pytest.mark.slow
+def test_emb_voxels_carry_the_contract_fields_in_order(service):
+  s2 = rh.Sniffer("emb2", D2, PointCloud2,
+                  "/robot_2/rayfronts/msg_serv/emb/voxels")
+  try:
+    pts = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    feats = _emb_features(2, 3)
+    assert rh.wait_until(
+      lambda: service.children[2]._get_publisher(
+        "/robot_2/rayfronts/msg_serv/emb/voxels").get_subscription_count(),
+      timeout=20)
+    msgs = s2.wait_for(
+      1, timeout=20,
+      pump=lambda: service.publish_pc(pts, features=feats,
+                                      layer="emb/voxels"))
+    assert msgs
+    a = ros_utils.pointcloud2_to_array(msgs[-1])
+    assert a.dtype.names == ("x", "y", "z", "cnt", "e_0", "e_1", "e_2")
+    assert all(a.dtype[n] == np.float32 for n in a.dtype.names)
+    assert a.shape == (2,)
+    np.testing.assert_allclose(a["cnt"], [1.0, 2.0])
+    # Same frame shift as every other cloud: robot_2's own map frame.
+    shift = mrc.world_to_local_shift([100.0, 50.0, 0.0])
+    np.testing.assert_allclose(np.stack([a["x"], a["y"], a["z"]], -1),
+                               pts.numpy() + shift, atol=1e-3)
+  finally:
+    s2.shutdown()
+
+
+@pytest.mark.slow
+def test_emb_meta_is_latched_on_every_robot(service):
+  s1 = rh.Sniffer("meta1", D1, std_msgs.msg.String,
+                  "/robot_1/rayfronts/msg_serv/emb/meta", qos=rh.LATCHED)
+  s2 = rh.Sniffer("meta2", D2, std_msgs.msg.String,
+                  "/robot_2/rayfronts/msg_serv/emb/meta", qos=rh.LATCHED)
+  try:
+    payload = json.dumps({"k": 128, "dim": 1152})
+    m1 = s1.wait_for(1, timeout=25,
+                     pump=lambda: service.publish_string("emb/meta", payload,
+                                                         latched=True))
+    m2 = s2.wait_for(1, timeout=25)
+    assert m1 and m2
+    assert json.loads(m1[-1].data)["k"] == 128
+    assert m2[-1].data == m1[-1].data
+  finally:
+    s1.shutdown()
+    s2.shutdown()
+
+
+@pytest.mark.slow
+def test_emb_text_requests_reach_one_callback_from_every_domain(service):
+  seen = []
+  service.subscribe_string("emb/text/request", seen.append)
+  t1 = rh.Talker("er1", D1, "/robot_1/rayfronts/msg_serv/emb/text/request")
+  t2 = rh.Talker("er2", D2, "/robot_2/rayfronts/msg_serv/emb/text/request")
+  try:
+    deadline = time.time() + 25
+    while time.time() < deadline:
+      if {"from_1", "from_2"}.issubset(set(seen)):
+        break
+      t1.say("from_1")
+      t2.say("from_2")
+      time.sleep(0.2)
+    assert {"from_1", "from_2"}.issubset(set(seen)), seen
+  finally:
+    t1.shutdown()
+    t2.shutdown()
+
+
+# --------------------------------------------------------------------------- #
 # Shift helper
 # --------------------------------------------------------------------------- #
 

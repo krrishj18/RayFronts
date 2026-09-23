@@ -61,6 +61,17 @@ def test_shared_humans_cli_overrides_from_the_contract():
   assert cfg.vis.domain_ids is None
 
 
+def test_the_shared_config_keeps_the_embedding_export_off():
+  """A mission that does not use the rules planner must be untouched."""
+  cfg = _compose("shared_humans")
+  assert cfg.emb.enabled is False
+  assert cfg.emb.k == 128
+  assert cfg.emb.period is None
+  assert cfg.emb.seed_vocab is None
+  assert cfg.emb.fit_min_voxels == 500
+  assert cfg.emb.save_dir is None
+
+
 def test_domain_ids_propagate_when_overridden():
   cfg = _compose("shared_humans",
                  ["dataset.robot_ids=[1,2]", "dataset.domain_ids=[11,12]"])

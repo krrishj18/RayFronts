@@ -600,6 +600,10 @@ def nearest_index(points,
 STATUS_KEYS = ("robot", "domain", "anchored", "boot_enu", "frames_robot",
                "frames_total", "queries", "vox_count", "ray_count", "ts")
 
+# Appended as status["emb"] only while the embedding export is enabled, so a
+# mission that does not use it sees exactly STATUS_KEYS.
+STATUS_EMB_KEYS = ("k", "fit_n", "cos_preservation")
+
 
 def build_status(robot_id,
                  domain_id: int,
@@ -610,9 +614,15 @@ def build_status(robot_id,
                  queries: Optional[Iterable[str]],
                  vox_count: int,
                  ray_count: int,
-                 ts: float) -> dict:
-  """Build the ``/robot_i/rayfronts/status`` payload (frozen schema)."""
-  return {
+                 ts: float,
+                 emb: Optional[dict] = None) -> dict:
+  """Build the ``/robot_i/rayfronts/status`` payload (frozen schema).
+
+  Args:
+    emb: Optional embedding-export state; adds an ``emb`` block with
+      :data:`STATUS_EMB_KEYS`. None leaves the payload exactly as it was.
+  """
+  status = {
     "robot": robot_name(robot_id),
     "domain": int(domain_id),
     "anchored": bool(anchored),
@@ -625,6 +635,14 @@ def build_status(robot_id,
     "ray_count": int(ray_count),
     "ts": float(ts),
   }
+  if emb is not None:
+    r = emb.get("cos_preservation")
+    status["emb"] = {
+      "k": int(emb.get("k", 0) or 0),
+      "fit_n": int(emb.get("fit_n", 0) or 0),
+      "cos_preservation": None if r is None else float(r),
+    }
+  return status
 
 
 def status_to_json(status: dict) -> str:

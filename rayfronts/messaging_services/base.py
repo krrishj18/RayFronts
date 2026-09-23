@@ -56,6 +56,40 @@ class MessagingService(abc.ABC):
     """
     pass
 
+  def has_subscribers(self, layer: str) -> bool:
+    """Whether anything is listening on *layer*.
+
+    Lets a caller skip an expensive computation before calling publish_pc.
+    Default is True (publish unconditionally); override where the transport
+    can tell.
+
+    Args:
+      layer: Logical name of the point cloud / string topic.
+    """
+    return True
+
+  def publish_string(self, layer: str, data: str,
+                     latched: bool = False) -> None:
+    """Publish a string payload on *layer*. Default is no-op.
+
+    Args:
+      layer: Logical name for this topic (e.g. "emb/meta").
+      data: The string payload.
+      latched: Whether late subscribers should still receive the last value.
+    """
+    pass
+
+  def subscribe_string(self, layer: str, callback) -> None:
+    """Invoke *callback* with the string data of every message on *layer*.
+
+    Default is no-op; override in implementations that support subscribing.
+
+    Args:
+      layer: Logical name for this topic (e.g. "emb/text/request").
+      callback: Callable taking the message's string data.
+    """
+    pass
+
   def publish_query_results(self, query_results: dict,
                             query_labels: list = None) -> None:
     """Publish query results for programmatic consumption (e.g. by a planner).

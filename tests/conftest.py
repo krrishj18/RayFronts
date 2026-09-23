@@ -56,8 +56,9 @@ def load_standalone(module_name: str):
   """Import ``rayfronts/<module_name>.py`` WITHOUT running the package init.
 
   Only valid for modules that import nothing from ``rayfronts`` themselves --
-  ``multi_robot_common`` and ``encoder_protocol``. That restriction is the
-  point: it is what keeps their logic testable on a bare python.
+  ``multi_robot_common``, ``encoder_protocol`` and ``embedding_export``. That
+  restriction is the point: it is what keeps their logic testable on a bare
+  python.
   """
   path = PKG / f"{module_name}.py"
   key = f"_standalone_rayfronts_{module_name}"
@@ -92,6 +93,12 @@ def mrc():
 def proto():
   """rayfronts.encoder_protocol, loaded without the package init."""
   return load_standalone("encoder_protocol")
+
+
+@pytest.fixture(scope="session")
+def embexp():
+  """rayfronts.embedding_export, loaded without the package init."""
+  return load_standalone("embedding_export")
 
 
 @pytest.fixture(scope="session")

@@ -651,6 +651,8 @@ class MultiRobotMappingServer(MappingServer):
     ms = self.messaging_service
     n_vox, n_ray = self._map_counts()
     labels = self.current_query_labels()
+    exporter = getattr(self, "emb_export", None)
+    emb = None if exporter is None else exporter.status_fields()
     ts = time.time()
     for rid in ds.robot_ids:
       anchored = ds.is_anchored(rid)
@@ -659,7 +661,7 @@ class MultiRobotMappingServer(MappingServer):
         robot_id=rid, domain_id=ds.domain_of(rid), anchored=anchored,
         boot_enu=(list(boot) if anchored else None),
         frames_robot=ds.frames_robot(rid), frames_total=ds.frames_total,
-        queries=labels, vox_count=n_vox, ray_count=n_ray, ts=ts)
+        queries=labels, vox_count=n_vox, ray_count=n_ray, ts=ts, emb=emb)
       ms.publish_status(rid, status)
 
   def _status_loop(self):
@@ -742,6 +744,8 @@ class MultiRobotMappingServer(MappingServer):
 
       if self.cfg.querying.period > 0 and i % self.cfg.querying.period == 0:
         self.run_queries()
+
+      self.emb_export.maybe_run(i)
 
       if (self.messaging_service is not None
           and self.cfg.messaging_publish_period > 0

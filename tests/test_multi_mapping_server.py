@@ -248,6 +248,29 @@ def test_status_survives_an_empty_map():
   assert dict(s.messaging_service.published)[1]["ray_count"] == 0
 
 
+def _status_server(emb_fields):
+  s = _bare_server(["person"])
+  s.dataset = _FakeDataset()
+  s.messaging_service = _FakeMessaging()
+  s.mapper = _FakeMapper()
+  s.emb_export = types.SimpleNamespace(status_fields=lambda: emb_fields)
+  s.publish_status_once()
+  return dict(s.messaging_service.published)
+
+
+def test_status_carries_the_emb_block_when_the_export_is_enabled():
+  published = _status_server(dict(k=64, fit_n=900, cos_preservation=0.91))
+  for rid in (1, 2):
+    assert published[rid]["emb"] == {"k": 64, "fit_n": 900,
+                                     "cos_preservation": 0.91}
+
+
+def test_status_has_no_emb_block_when_the_export_is_disabled():
+  """emb.enabled: false must leave the frozen status schema alone."""
+  published = _status_server(None)
+  assert list(published[1].keys()) == list(mrc.STATUS_KEYS)
+
+
 # --------------------------------------------------------------------------- #
 # Open-set probes
 # --------------------------------------------------------------------------- #

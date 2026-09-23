@@ -27,7 +27,8 @@ import torchvision
 import numpy as np
 import hydra
 
-from rayfronts import datasets, visualizers, image_encoders, mapping, utils
+from rayfronts import (datasets, visualizers, image_encoders, mapping, utils,
+                       embedding_export)
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,13 @@ class MappingServer:
       self.messaging_service = hydra.utils.instantiate(
         cfg.messaging_service,
         text_query_callback = self.add_queries if init_encoder else None)
+
+    # Inert unless cfg.emb.enabled (default false): creates no topic and
+    # touches nothing in the mapping loop.
+    self.emb_export = embedding_export.EmbeddingExporter(
+      cfg, mapper=self.mapper, encoder=self.encoder,
+      messaging_service=self.messaging_service)
+    self.emb_export.start()
 
   @torch.inference_mode()
   def add_queries(self, queries: List[str]):
@@ -363,6 +371,8 @@ class MappingServer:
 
       if self.cfg.querying.period > 0 and i % self.cfg.querying.period == 0:
         self.run_queries()
+
+      self.emb_export.maybe_run(i)
 
       if (self.messaging_service is not None
           and self.cfg.messaging_publish_period > 0

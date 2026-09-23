@@ -60,6 +60,33 @@ querying:
 # How often the messaging service publishes map point clouds (e.g. frontiers).
 messaging_publish_period: 10
 
+# Language-aligned embedding export (rules planner contract). While `enabled`
+# is false nothing here is read, no emb/* topic is created and every existing
+# topic, field and behaviour is unchanged.
+emb:
+
+  # Publish emb/voxels, emb/rays, emb/meta and serve emb/text/{request,response}.
+  enabled: false
+
+  # Projected embedding dimension. Clamped to min(k, feature dim, fit rows).
+  k: 128
+
+  # Publish every this many frames. null = follow querying.period.
+  period: null
+
+  # Path to a .txt with one phrase per line. Its aligned embeddings join the
+  # map's in the PCA fit so the directions the planner's phrases live in are
+  # kept. null = fit on map features alone.
+  seed_vocab: null
+
+  # Do not fit the basis until the map holds at least this many semantic
+  # voxels; a basis fitted on a handful of voxels is noise.
+  fit_min_voxels: 500
+
+  # Where emb_basis.pt is written. null = $RAYFRONTS_LOG_DIR / $LOG_DIR / the
+  # hydra run dir if one exists, else /tmp/rayfronts.
+  save_dir: null
+
 # Whether to use torch.compile as much as possible. Improves speed 
 # but may increase VRAM usage.
 compile: True

@@ -27,11 +27,19 @@ import rclpy
 from rclpy.node import Node
 from rclpy.executors import SingleThreadedExecutor
 
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.qos import (QoSProfile, ReliabilityPolicy, DurabilityPolicy,
+                       HistoryPolicy)
 from sensor_msgs.msg import PointCloud2
 import std_msgs
 
 logger = logging.getLogger(__name__)
+
+# Late subscribers (the planner starting after the mapper) must still see the
+# current value of a latched topic rather than wait for the next tick.
+LATCHED_QOS = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
+                         durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                         history=HistoryPolicy.KEEP_LAST,
+                         depth=1)
 
 # Reserved topic key segments for query results (avoid collision with visualizer
 # layer names such as voxel_rgb, frontiers, layer/pose, etc.).
@@ -92,6 +100,8 @@ class Ros2MessagingService(MessagingService):
     self.topic_prefix = topic_prefix
     self.frame_id = frame_id
     self._publishers = dict()
+    self._str_publishers = dict()
+    self._str_subs = dict()
 
     self._context, self._owns_context = ros_context.resolve_ros_object(
       context=context, domain_id=domain_id)
@@ -145,6 +155,58 @@ class Ros2MessagingService(MessagingService):
   def _has_subscriber(self, pub) -> bool:
     """Return True if the publisher has at least one subscriber."""
     return pub.get_subscription_count() > 0
+
+  def _get_string_publisher(self, topic: str, latched: bool = False):
+    """Return the lazy-created String publisher for the given topic."""
+    key = (topic, bool(latched))
+    try:
+      return self._str_publishers[key]
+    except KeyError:
+      qos = LATCHED_QOS if latched else QoSProfile(
+        reliability=ReliabilityPolicy.RELIABLE, depth=5)
+      pub = self._rosnode.create_publisher(std_msgs.msg.String, topic, qos)
+      self._str_publishers[key] = pub
+      logger.info("Publisher %s initialized.", topic)
+      return pub
+
+  @override
+  def has_subscribers(self, layer: str) -> bool:
+    """Whether this robot's *layer* point cloud topic has a subscriber."""
+    return self._has_subscriber(
+      self._get_publisher(f"{self.topic_prefix}/{layer}"))
+
+  @override
+  def publish_string(self, layer: str, data: str,
+                     latched: bool = False) -> None:
+    """Publish a std_msgs/String on prefix + "/" + layer."""
+    msg = std_msgs.msg.String()
+    msg.data = str(data)
+    self._get_string_publisher(f"{self.topic_prefix}/{layer}",
+                               latched).publish(msg)
+
+  @override
+  def subscribe_string(self, layer: str, callback) -> None:
+    """Call *callback* with the data of every String on prefix + layer.
+
+    One ROS subscription per topic, several callbacks behind it, so a second
+    caller is added rather than silently dropped.
+    """
+    topic = f"{self.topic_prefix}/{layer}"
+    entry = self._str_subs.get(topic)
+    if entry is not None:
+      entry[1].append(callback)
+      return
+
+    callbacks = [callback]
+    def _dispatch(msg):
+      for cb in callbacks:
+        cb(msg.data)
+
+    sub = self._rosnode.create_subscription(
+      std_msgs.msg.String, topic, _dispatch,
+      QoSProfile(reliability=ReliabilityPolicy.RELIABLE, depth=5))
+    self._str_subs[topic] = (sub, callbacks)
+    logger.info("Subscriber %s initialized.", topic)
 
   @override
   def publish_pc(self, pc_xyz: torch.FloatTensor,

@@ -281,6 +281,33 @@ class MultiRobotRos2MessagingService(MessagingService):
       local = pc_xyz if shift is None else pc_xyz + shift
       child.publish_pc(local, features=features, layer=layer)
 
+  @override
+  def has_subscribers(self, layer: str) -> bool:
+    """True when ANY robot's copy of *layer* has a subscriber."""
+    return any(child.has_subscribers(layer)
+               for child in self.children.values())
+
+  @override
+  def publish_string(self, layer: str, data: str,
+                     latched: bool = False) -> None:
+    """Publish the same string under every robot's prefix.
+
+    Same fan-out rule as the clouds: the shared server has one map, one basis
+    and one text service, and each robot sees them on its own domain.
+    """
+    for rid, child in self.children.items():
+      try:
+        child.publish_string(layer, data, latched=latched)
+      except Exception:                                     # noqa: BLE001
+        logger.exception("Failed to publish %s for %s", layer,
+                         mrc.robot_name(rid))
+
+  @override
+  def subscribe_string(self, layer: str, callback) -> None:
+    """Subscribe to *layer* on every robot's domain, one shared callback."""
+    for child in self.children.values():
+      child.subscribe_string(layer, callback)
+
   def publish_status(self, robot_id, status: dict) -> None:
     """Publish one robot's status JSON on ``/robot_i/rayfronts/status``."""
     pub = self.status_pubs.get(int(robot_id))
