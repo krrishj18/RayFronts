@@ -464,6 +464,7 @@ class EmbeddingExporter:
     except Exception:                                       # noqa: BLE001
       logger.exception("[emb] embedding export failed; continuing.")
 
+  @torch.inference_mode()
   def run_once(self) -> Dict[str, int]:
     """Align, fit (once), project and publish the current map."""
     if not self.enabled or self.messaging_service is None:
@@ -535,6 +536,7 @@ class EmbeddingExporter:
       return None
     return _l2(feats).to(like.device)
 
+  @torch.inference_mode()
   def _encode_text(self, phrases: Sequence[str], mode: str) -> torch.Tensor:
     if self.encoder is None:
       raise RuntimeError("no encoder")
@@ -564,6 +566,7 @@ class EmbeddingExporter:
     except Exception:                                       # noqa: BLE001
       logger.exception("[emb] could not publish the text response")
 
+  @torch.inference_mode()
   def text_response(self, payload) -> Optional[str]:
     """The JSON answer for one request payload.
 
