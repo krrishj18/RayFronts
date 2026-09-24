@@ -28,6 +28,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import torch
 
+from rayfronts import geometry3d as g3d
+
 logger = logging.getLogger(__name__)
 
 # Topic keys, appended to the messaging service's per-robot prefix.
@@ -39,7 +41,13 @@ TEXT_RESPONSE_LAYER = "emb/text/response"
 
 # FROZEN: the planner reads these keys off emb/meta.
 META_KEYS = ("k", "dim", "encoder", "lang_model", "fit_n", "cos_preservation",
-             "vox_size", "query_mode")
+             "vox_size", "query_mode", "coord")
+
+# The mapper works in RDF (x right, y down, z forward); ROS consumers expect
+# the map frame in FLU. Published positions and ray angles are converted the
+# way the ROS visualizer converts its clouds.
+MAP_COORD = "rdf"
+PUBLISHED_COORD = "flu"
 
 BASIS_FILENAME = "emb_basis.pt"
 DEFAULT_SAVE_DIR = "/tmp/rayfronts"
@@ -265,7 +273,8 @@ def encoder_name(encoder) -> Optional[str]:
 def build_meta(k: int, dim: Optional[int], encoder=None, fit_n: int = 0,
                cos_preservation: Optional[float] = None,
                vox_size: Optional[float] = None,
-               query_mode: str = "prompts") -> Dict[str, Any]:
+               query_mode: str = "prompts",
+               coord: str = PUBLISHED_COORD) -> Dict[str, Any]:
   """The ``emb/meta`` payload (frozen key set, see :data:`META_KEYS`)."""
   lang_model = getattr(encoder, "lang_model", None)
   return {
@@ -278,6 +287,7 @@ def build_meta(k: int, dim: Optional[int], encoder=None, fit_n: int = 0,
                          else float(cos_preservation)),
     "vox_size": None if vox_size is None else float(vox_size),
     "query_mode": str(query_mode),
+    "coord": str(coord),
   }
 
 
@@ -293,9 +303,38 @@ def _wants(messaging_service, layer: str) -> bool:
     return False
 
 
+def coord_transform(src: str = MAP_COORD, tgt: str = PUBLISHED_COORD
+                    ) -> torch.Tensor:
+  """3x3 rotation taking ``src`` axes to ``tgt`` axes (see geometry3d)."""
+  return g3d.get_coord_system_transform(src, tgt)
+
+
+def convert_points(xyz: torch.Tensor, transform: Optional[torch.Tensor]
+                   ) -> torch.Tensor:
+  if transform is None:
+    return xyz
+  return g3d.transform_points(xyz, transform.to(xyz.device, xyz.dtype))
+
+
+def convert_angles(theta_deg: torch.Tensor, phi_deg: torch.Tensor,
+                   transform: Optional[torch.Tensor]):
+  """Ray angles (degrees, the mapper's convention) re-expressed after
+  rotating the ray direction by ``transform``."""
+  if transform is None:
+    return theta_deg, phi_deg
+  x, y, z = g3d.spherical_to_cartesian(
+    torch.ones_like(theta_deg), torch.deg2rad(theta_deg),
+    torch.deg2rad(phi_deg))
+  d = convert_points(torch.stack([x, y, z], dim=-1), transform)
+  _, theta, phi = g3d.cartesian_to_spherical(d[:, 0], d[:, 1], d[:, 2])
+  return torch.rad2deg(theta), torch.rad2deg(phi)
+
+
 def publish_embeddings(messaging_service, projector: EmbeddingProjector,
                        vox=None, rays=None,
-                       meta: Optional[Dict[str, Any]] = None) -> Dict[str, int]:
+                       meta: Optional[Dict[str, Any]] = None,
+                       transform: Optional[torch.Tensor] = None
+                       ) -> Dict[str, int]:
   """Publish ``emb/voxels``, ``emb/rays`` and the latched ``emb/meta``.
 
   Args:
@@ -304,6 +343,9 @@ def publish_embeddings(messaging_service, projector: EmbeddingProjector,
     vox: ``(vox_xyz, vox_cnt, vox_emb)`` from :func:`aligned_embeddings`.
     rays: ``(ray_orig_angles, ray_cnt, ray_emb)``.
     meta: When given, published once on ``emb/meta`` as latched JSON.
+    transform: 3x3 rotation applied to positions and ray directions before
+      publishing (the mapper's RDF -> the ROS map frame's FLU). None
+      publishes the mapper's own coordinates.
 
   Returns:
     ``{layer: point count}`` for the clouds that were actually published.
@@ -315,16 +357,18 @@ def publish_embeddings(messaging_service, projector: EmbeddingProjector,
   if vox is not None and _wants(messaging_service, VOX_LAYER):
     xyz, cnt, emb = vox
     messaging_service.publish_pc(
-      xyz, features=embedding_fields(projector.project(emb), cnt),
+      convert_points(xyz, transform),
+      features=embedding_fields(projector.project(emb), cnt),
       layer=VOX_LAYER)
     published[VOX_LAYER] = int(xyz.shape[0])
 
   if rays is not None and _wants(messaging_service, RAY_LAYER):
     roa, cnt, emb = rays
-    extra = dict(theta=roa[:, 3], phi=roa[:, 4])
+    theta, phi = convert_angles(roa[:, 3], roa[:, 4], transform)
+    extra = dict(theta=theta, phi=phi)
     messaging_service.publish_pc(
-      roa[:, :3], features=embedding_fields(projector.project(emb), cnt,
-                                            extra=extra),
+      convert_points(roa[:, :3], transform),
+      features=embedding_fields(projector.project(emb), cnt, extra=extra),
       layer=RAY_LAYER)
     published[RAY_LAYER] = int(roa.shape[0])
 
@@ -407,6 +451,7 @@ class EmbeddingExporter:
                       if period is None else period)
     self.seed_vocab = _cfg_get(emb, "seed_vocab", None)
     self.fit_min_voxels = int(_cfg_get(emb, "fit_min_voxels", 500))
+    self.transform = coord_transform()
     self.save_dir = _cfg_get(emb, "save_dir", None) or default_save_dir()
     self.query_mode = str(_cfg_get(querying, "text_query_mode", None)
                           or "prompts")
@@ -480,7 +525,8 @@ class EmbeddingExporter:
           return dict()
         self._fit(vox[2])
       published = publish_embeddings(self.messaging_service, self.projector,
-                                     vox=vox, rays=rays, meta=self._meta)
+                                     vox=vox, rays=rays, meta=self._meta,
+                                     transform=self.transform)
       self._meta = None
       return published
 

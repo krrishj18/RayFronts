@@ -359,6 +359,11 @@ def test_voxel_cloud_field_layout(exporter):
     assert rec.dtype[name] == np.float32
   assert rec.shape == (40,)
   np.testing.assert_allclose(rec["cnt"], np.arange(1, 41), rtol=1e-6)
+  # Positions leave the mapper's RDF frame as FLU: x=fwd(z), y=-right(x), z=-down(y).
+  xyz = exporter.fake_mapper.global_vox_xyz.numpy()
+  np.testing.assert_allclose(rec["x"], xyz[:, 2], rtol=1e-5)
+  np.testing.assert_allclose(rec["y"], -xyz[:, 0], rtol=1e-5)
+  np.testing.assert_allclose(rec["z"], -xyz[:, 1], rtol=1e-5)
   # Every published vector is a unit vector: dot(text, voxel) is the cosine.
   emb = np.stack([rec[f"e_{j}"] for j in range(4)], axis=1)
   np.testing.assert_allclose(np.linalg.norm(emb, axis=1), np.ones(40),
@@ -374,10 +379,29 @@ def test_ray_cloud_field_layout_and_angles(exporter):
     assert rec.dtype[name] == np.float32
   assert rec.shape == (5,)
   roa = exporter.fake_mapper.global_rays_orig_angles.numpy()
-  # Origin + angles, the same convention rays_sim uses.
-  np.testing.assert_allclose(rec["x"], roa[:, 0], rtol=1e-5)
-  np.testing.assert_allclose(rec["theta"], roa[:, 3], rtol=1e-5)
-  np.testing.assert_allclose(rec["phi"], roa[:, 4], rtol=1e-5)
+  # Origin + angles (degrees), rotated RDF -> FLU like the visualizer's rays.
+  np.testing.assert_allclose(rec["x"], roa[:, 2], rtol=1e-5)
+  np.testing.assert_allclose(rec["y"], -roa[:, 0], rtol=1e-5)
+  np.testing.assert_allclose(rec["z"], -roa[:, 1], rtol=1e-5)
+
+  def unit(theta_deg, phi_deg):
+    t, p = np.deg2rad(theta_deg), np.deg2rad(phi_deg)
+    return np.stack([np.cos(t) * np.sin(p), np.sin(t) * np.sin(p), np.cos(p)], -1)
+  d_rdf = unit(roa[:, 3], roa[:, 4])
+  d_flu = np.stack([d_rdf[:, 2], -d_rdf[:, 0], -d_rdf[:, 1]], -1)
+  np.testing.assert_allclose(unit(rec["theta"], rec["phi"]), d_flu, atol=1e-5)
+  assert np.all(rec["phi"] >= 0) and np.all(rec["phi"] <= 180)
+
+
+def test_publish_without_a_transform_keeps_the_mapper_frame(exporter):
+  exporter.transform = None
+  exporter.run_once()
+  rec = exporter.messaging.cloud(ee.VOX_LAYER)
+  np.testing.assert_allclose(
+    rec["x"], exporter.fake_mapper.global_vox_xyz.numpy()[:, 0], rtol=1e-5)
+  rays = exporter.messaging.cloud(ee.RAY_LAYER)
+  roa = exporter.fake_mapper.global_rays_orig_angles.numpy()
+  np.testing.assert_allclose(rays["theta"], roa[:, 3], rtol=1e-5)
 
 
 def test_meta_is_latched_json_with_the_frozen_key_set(exporter):
@@ -396,6 +420,7 @@ def test_meta_is_latched_json_with_the_frozen_key_set(exporter):
   assert 0.0 <= meta["cos_preservation"] <= 1.0
   assert meta["vox_size"] == pytest.approx(0.3)
   assert meta["query_mode"] == "prompts"
+  assert meta["coord"] == "flu"
 
 
 def test_meta_is_published_once_per_fit(exporter):
