@@ -189,6 +189,10 @@ class EmbeddingProjector:
     self.fit_cos_preservation = meta.get("cos_preservation")
 
 
+def _rows(t) -> int:
+  return 0 if t is None else int(t.shape[0])
+
+
 def _cnt_column(cnt: Optional[torch.Tensor], n: int,
                 like: torch.Tensor) -> torch.Tensor:
   """The mapper's hit count as a flat (N,) tensor; ones when it has none."""
@@ -211,6 +215,58 @@ def _align(mapper, encoder, feat: torch.Tensor) -> torch.Tensor:
   aligned = encoder.align_spatial_features_with_language(
     feat.unsqueeze(-1).unsqueeze(-1)).squeeze(-1).squeeze(-1)
   return _l2(aligned)
+
+
+# The language head on every voxel at once is the mapper's peak GPU
+# transient (250k voxels x 1152 floats ~ 1.2 GB, and torch keeps it reserved);
+# projecting chunk by chunk bounds that to one chunk.
+PROJECT_CHUNK = 16384
+# Voxels the basis is fitted from (the projector subsamples further).
+FIT_MAX_VOXELS = 20000
+
+
+def fit_sample(mapper, encoder, max_rows: int = FIT_MAX_VOXELS) -> torch.Tensor:
+  """Aligned embeddings of at most ``max_rows`` random voxels, for the fit."""
+  feat = mapper.global_vox_feat
+  n = int(feat.shape[0])
+  if n > max_rows:
+    idx = torch.randperm(n, device=feat.device)[:max_rows]
+    feat = feat[idx]
+  return _align(mapper, encoder, feat)
+
+
+def _project_chunks(mapper, encoder, projector, feat: torch.Tensor,
+                    chunk: int) -> torch.Tensor:
+  step = max(1, int(chunk))
+  outs = [projector.project(_align(mapper, encoder, feat[i:i + step]))
+          for i in range(0, int(feat.shape[0]), step)]
+  return torch.cat(outs) if len(outs) > 1 else outs[0]
+
+
+def projected_embeddings(mapper, encoder, projector: "EmbeddingProjector",
+                         chunk: int = PROJECT_CHUNK):
+  """:func:`aligned_embeddings` with the embeddings already projected to
+  ``projector.k`` dims, aligned chunk-wise (``chunk`` voxels of full-width
+  features live at a time). Same ``(vox, rays)`` shape otherwise."""
+  vox = None
+  rays = None
+  if mapper is None or encoder is None:
+    return vox, rays
+
+  xyz = getattr(mapper, "global_vox_xyz", None)
+  feat = getattr(mapper, "global_vox_feat", None)
+  if xyz is not None and feat is not None and int(xyz.shape[0]) > 0:
+    n = int(xyz.shape[0])
+    vox = (xyz, _cnt_column(getattr(mapper, "global_vox_cnt", None), n, xyz),
+           _project_chunks(mapper, encoder, projector, feat, chunk))
+
+  roa = getattr(mapper, "global_rays_orig_angles", None)
+  rfeat = getattr(mapper, "global_rays_feat", None)
+  if roa is not None and rfeat is not None and int(roa.shape[0]) > 0:
+    n = int(roa.shape[0])
+    rays = (roa, _cnt_column(getattr(mapper, "global_rays_cnt", None), n, roa),
+            _project_chunks(mapper, encoder, projector, rfeat, chunk))
+  return vox, rays
 
 
 def aligned_embeddings(mapper, encoder):
@@ -333,8 +389,8 @@ def convert_angles(theta_deg: torch.Tensor, phi_deg: torch.Tensor,
 def publish_embeddings(messaging_service, projector: EmbeddingProjector,
                        vox=None, rays=None,
                        meta: Optional[Dict[str, Any]] = None,
-                       transform: Optional[torch.Tensor] = None
-                       ) -> Dict[str, int]:
+                       transform: Optional[torch.Tensor] = None,
+                       projected: bool = False) -> Dict[str, int]:
   """Publish ``emb/voxels``, ``emb/rays`` and the latched ``emb/meta``.
 
   Args:
@@ -346,6 +402,8 @@ def publish_embeddings(messaging_service, projector: EmbeddingProjector,
     transform: 3x3 rotation applied to positions and ray directions before
       publishing (the mapper's RDF -> the ROS map frame's FLU). None
       publishes the mapper's own coordinates.
+    projected: The embeddings in ``vox``/``rays`` are already ``k``-dim
+      (:func:`projected_embeddings`); False projects them here.
 
   Returns:
     ``{layer: point count}`` for the clouds that were actually published.
@@ -358,7 +416,8 @@ def publish_embeddings(messaging_service, projector: EmbeddingProjector,
     xyz, cnt, emb = vox
     messaging_service.publish_pc(
       convert_points(xyz, transform),
-      features=embedding_fields(projector.project(emb), cnt),
+      features=embedding_fields(emb if projected else projector.project(emb),
+                                cnt),
       layer=VOX_LAYER)
     published[VOX_LAYER] = int(xyz.shape[0])
 
@@ -368,7 +427,8 @@ def publish_embeddings(messaging_service, projector: EmbeddingProjector,
     extra = dict(theta=theta, phi=phi)
     messaging_service.publish_pc(
       convert_points(roa[:, :3], transform),
-      features=embedding_fields(projector.project(emb), cnt, extra=extra),
+      features=embedding_fields(emb if projected else projector.project(emb),
+                                cnt, extra=extra),
       layer=RAY_LAYER)
     published[RAY_LAYER] = int(roa.shape[0])
 
@@ -517,16 +577,19 @@ class EmbeddingExporter:
     with self._lock:
       if not self._any_subscriber():
         return dict()
-      vox, rays = aligned_embeddings(self.mapper, self.encoder)
-      if vox is None and rays is None:
+      n_vox = _rows(getattr(self.mapper, "global_vox_xyz", None))
+      n_ray = _rows(getattr(self.mapper, "global_rays_orig_angles", None))
+      if n_vox == 0 and n_ray == 0:
         return dict()
       if not self.projector.is_fitted():
-        if vox is None or int(vox[2].shape[0]) < self.fit_min_voxels:
+        if n_vox < self.fit_min_voxels:
           return dict()
-        self._fit(vox[2])
+        self._fit(fit_sample(self.mapper, self.encoder))
+      vox, rays = projected_embeddings(self.mapper, self.encoder,
+                                       self.projector)
       published = publish_embeddings(self.messaging_service, self.projector,
                                      vox=vox, rays=rays, meta=self._meta,
-                                     transform=self.transform)
+                                     transform=self.transform, projected=True)
       self._meta = None
       return published
 

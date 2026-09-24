@@ -393,6 +393,26 @@ def test_ray_cloud_field_layout_and_angles(exporter):
   assert np.all(rec["phi"] >= 0) and np.all(rec["phi"] <= 180)
 
 
+def test_projected_embeddings_match_projecting_the_aligned_ones(exporter):
+  exporter.run_once()                       # fits the basis
+  mapper, enc, proj = exporter.fake_mapper, exporter.enc, exporter.projector
+  (vox_xyz, vox_cnt, vox_emb), (roa, ray_cnt, ray_emb) = _aligned(mapper, enc)
+  for chunk in (7, 1000):
+    vox, rays = ee.projected_embeddings(mapper, enc, proj, chunk=chunk)
+    assert vox[2].shape == (40, proj.k) and rays[2].shape == (5, proj.k)
+    torch.testing.assert_close(vox[2], proj.project(vox_emb))
+    torch.testing.assert_close(rays[2], proj.project(ray_emb))
+    torch.testing.assert_close(vox[0], vox_xyz)
+    torch.testing.assert_close(vox[1], vox_cnt)
+
+
+def test_fit_sample_caps_the_rows_it_aligns():
+  mapper = FakeMapper(n_vox=40, n_ray=0, dim=6)
+  enc = FakeEncoder(in_dim=6, lang_dim=8)
+  assert ee.fit_sample(mapper, enc, max_rows=10).shape == (10, 8)
+  assert ee.fit_sample(mapper, enc, max_rows=100).shape == (40, 8)
+
+
 def test_publish_without_a_transform_keeps_the_mapper_frame(exporter):
   exporter.transform = None
   exporter.run_once()
